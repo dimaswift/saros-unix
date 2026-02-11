@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-START=${1:-1}
-END=${2:-180}
+# Fetch all Saros series (solar and/or lunar) from NASA.
+# Usage: ./fetch_all.sh [solar|lunar|both] [START [END]]
+#   kind   : solar, lunar, or both (default: both)
+#   START  : first Saros number (default: 1)
+#   END    : last  Saros number (default: 180)
 
-success=0
-failed=0
-skipped=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-for i in $(seq "$START" "$END"); do
-    if [ -f "$i/eclipses.jsonl" ] && [ -f "$i/saros.json" ]; then
-        echo "Skipping Saros $i (already exists)"
-        ((skipped++)) || true
-        continue
-    fi
+KIND=${1:-both}
+START=${2:-1}
+END=${3:-180}
 
-    echo -n "Saros $i ... "
-    if python3 parse_saros.py "$i" 2>&1 | tail -1; then
-        ((success++)) || true
-    else
-        echo "FAILED: Saros $i" >&2
-        ((failed++)) || true
-    fi
-done
-
-echo ""
-echo "Done: $success succeeded, $failed failed, $skipped skipped"
+case "$KIND" in
+    solar)
+        bash "$SCRIPT_DIR/solar/fetch_all.sh" "$START" "$END"
+        ;;
+    lunar)
+        bash "$SCRIPT_DIR/lunar/fetch_all.sh" "$START" "$END"
+        ;;
+    both)
+        echo "=== Solar ==="
+        bash "$SCRIPT_DIR/solar/fetch_all.sh" "$START" "$END"
+        echo ""
+        echo "=== Lunar ==="
+        bash "$SCRIPT_DIR/lunar/fetch_all.sh" "$START" "$END"
+        ;;
+    *)
+        echo "Usage: $0 [solar|lunar|both] [START [END]]" >&2
+        exit 1
+        ;;
+esac

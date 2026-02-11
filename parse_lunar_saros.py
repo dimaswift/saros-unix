@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """
-Parse NASA Saros eclipse series pages into JSONL + JSON output.
+Parse NASA Lunar Saros eclipse series pages into JSONL + JSON output.
 
 Usage:
-    python parse_saros.py <saros_number>
+    python parse_lunar_saros.py <saros_number>
 
 Output:
-    <saros_number>/
+    lunar/<saros_number>/
         eclipses.jsonl  - one JSON object per eclipse, sorted by unix_timestamp
         saros.json      - series-level metadata
+
+NASA source URL pattern:
+    https://eclipse.gsfc.nasa.gov/LEsaros/LEsaros{NNN}.html
+
+Lunar eclipse data columns (from the <pre> block):
+  Seq. Num.  Rel. Num.  Calendar Date  TD of Greatest Eclipse  ΔT s
+  Luna Num   Ecl. Type  QSE  Gamma  Pen. Mag.  Um. Mag.
+  Pen. m  Par. m  Total m
+
+Sample line:
+   01  -36  -2570 Mar 14  07:40:26  61380 -56522   Nb  h-  -1.5386  0.0377 -0.9683   55.6    -      -
 """
 
 import sys
@@ -20,25 +31,28 @@ import requests
 from bs4 import BeautifulSoup
 
 
-NASA_URL = "https://eclipse.gsfc.nasa.gov/SEsaros/SEsaros{:03d}.html"
+NASA_URL = "https://eclipse.gsfc.nasa.gov/LEsaros/LEsaros{:03d}.html"
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_BASE = os.path.join(SCRIPT_DIR, "lunar")
 
 # Regex for one eclipse data line in the <pre> block.
-# Format: 08570 -33  1613 May 19  17:43:36    103  -4782   Pb   1.5171  0.0712  63.3N 137.6E   0  801  03m59s
+# Format: 01  -36  -2570 Mar 14  07:40:26  61380 -56522   Nb  h-  -1.5386  0.0377 -0.9683   55.6    -      -
 ECLIPSE_RE = re.compile(
-    r"^(\d{5}|-{5})\s+"         # seq_num (may be ----- for ancient eclipses)
-    r"(-?\d+)\s+"               # rel_num
-    r"(-?\d{1,5}\s+\w{3}\s+\d{1,2})\s+"  # calendar_date (YYYY Mon DD, year may be negative)
-    r"(\d{2}:\d{2}:\d{2})\s+"  # td_of_greatest_eclipse
-    r"(-?\d+)\s+"               # delta_t (seconds)
-    r"(-?\d+)\s+"               # luna_num
-    r"(\w+\+?)\s+"              # ecl_type (may include + suffix e.g. A+)
-    r"(-?[\d.]+)\s+"            # gamma
-    r"([\d.]+)\s+"              # magnitude
-    r"([\d.]+[NS])\s+"          # latitude  e.g. 63.3N
-    r"([\d.]+[EW])\s+"          # longitude e.g. 137.6E
-    r"(-?\d+)"                  # sun_alt
-    r"(?:\s+(-|\d+))?"          # central_width_km (optional, may be '-')
-    r"(?:\s+(\d+m\d+s))?"       # central_duration (optional)
+    r"^\s*(\d{1,5}|-{5})\s+"         # seq_num (may be ----- for ancient)
+    r"(-?\d+)\s+"                     # rel_num
+    r"(-?\d{1,5}\s+\w{3}\s+\d{1,2})\s+"  # calendar_date (YYYY Mon DD)
+    r"(\d{2}:\d{2}:\d{2})\s+"        # td_of_greatest_eclipse
+    r"(-?\d+)\s+"                     # delta_t (seconds)
+    r"(-?\d+)\s+"                     # luna_num
+    r"(\w+[+\-]?)\s+"                  # ecl_type (e.g. T, P, N, Nb, T+, T-, Nx)
+    r"(\S+)\s+"                       # qse (e.g. h-, t+, u-)
+    r"(-?[\d.]+)\s+"                  # gamma
+    r"(-?[\d.]+)\s+"                  # pen_mag
+    r"(-?[\d.]+)\s+"                  # um_mag (umbral magnitude, negative = penumbral-only)
+    r"([\d.]+|-)\s+"                  # pen_duration_m  (minutes, or '-')
+    r"([\d.]+|-)\s+"                  # par_duration_m  (minutes, or '-')
+    r"([\d.]+|-)"                     # total_duration_m (minutes, or '-')
     r"\s*$"
 )
 
@@ -48,14 +62,6 @@ def fetch_page(saros_num: int) -> str:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     return resp.text
-
-
-def coord_to_deg(value: str) -> float:
-    """Convert '63.3N', '81.5W' etc. to signed float degrees."""
-    num = float(value[:-1])
-    if value[-1] in ("S", "W"):
-        num = -num
-    return num
 
 
 _MONTHS = {
@@ -92,6 +98,13 @@ def to_unix_timestamp(calendar_date: str, td_time: str) -> int:
     return (jd - _JD_UNIX_EPOCH) * 86400 + day_seconds
 
 
+def _parse_duration(raw: str) -> float | None:
+    """Convert a duration field ('55.6' or '-') to float minutes, or None."""
+    if raw == "-":
+        return None
+    return float(raw)
+
+
 def parse_eclipses(html: str) -> list[dict]:
     """Parse all eclipse entries from the <pre> blocks on the page."""
     soup = BeautifulSoup(html, "html.parser")
@@ -108,35 +121,30 @@ def parse_eclipses(html: str) -> list[dict]:
 
             seq_raw = m.group(1)
             seq_num = int(seq_raw) if seq_raw != "-----" else None
-            # Use (seq_num, rel_num) as dedup key since seq_num may be None
             dedup_key = (seq_num, int(m.group(2)))
             if dedup_key in seen_seq:
-                continue  # skip duplicate table (page lists catalog twice)
+                continue
             seen_seq.add(dedup_key)
 
             calendar_date = m.group(3)
             td_time = m.group(4)
-            lat_raw = m.group(10)
-            lon_raw = m.group(11)
 
             entry = {
-                "seq_num": seq_num,  # None for ancient eclipses where catalog shows -----
-                "rel_num": int(m.group(2)),
-                "calendar_date": calendar_date,
-                "td_of_greatest_eclipse": td_time,
-                "delta_t": int(m.group(5)),
-                "luna_num": int(m.group(6)),
-                "ecl_type": m.group(7),
-                "gamma": float(m.group(8)),
-                "magnitude": float(m.group(9)),
-                "latitude": lat_raw,
-                "latitude_deg": coord_to_deg(lat_raw),
-                "longitude": lon_raw,
-                "longitude_deg": coord_to_deg(lon_raw),
-                "sun_alt": int(m.group(12)),
-                "central_width_km": int(m.group(13)) if m.group(13) and m.group(13) != "-" else None,
-                "central_duration": m.group(14) if m.group(14) else None,
-                "unix_timestamp": to_unix_timestamp(calendar_date, td_time),
+                "seq_num":                  seq_num,
+                "rel_num":                  int(m.group(2)),
+                "calendar_date":            calendar_date,
+                "td_of_greatest_eclipse":   td_time,
+                "delta_t":                  int(m.group(5)),
+                "luna_num":                 int(m.group(6)),
+                "ecl_type":                 m.group(7),
+                "qse":                      m.group(8),
+                "gamma":                    float(m.group(9)),
+                "pen_mag":                  float(m.group(10)),
+                "um_mag":                   float(m.group(11)),
+                "pen_duration_m":           _parse_duration(m.group(12)),
+                "par_duration_m":           _parse_duration(m.group(13)),
+                "total_duration_m":         _parse_duration(m.group(14)),
+                "unix_timestamp":           to_unix_timestamp(calendar_date, td_time),
             }
             eclipses.append(entry)
 
@@ -148,18 +156,15 @@ def parse_series_metadata(html: str, saros_num: int, eclipses: list[dict]) -> di
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(separator=" ")
 
-    # Duration in years
     duration_years = None
     m = re.search(r"Duration of Saros\s+\d+\s*=\s*([\d.]+)\s*Years", text, re.IGNORECASE)
     if m:
         duration_years = float(m.group(1))
 
-    # Eclipse type counts from the type distribution table (first table on page)
-    type_counts = {"partial": 0, "annular": 0, "total": 0, "hybrid": 0}
+    type_counts = {"penumbral": 0, "partial": 0, "total": 0}
     tables = soup.find_all("table")
     for table in tables:
         rows = table.find_all("tr")
-        # Find the header row that contains "Eclipse Type"
         header_row_idx = None
         for idx, row in enumerate(rows):
             cells_text = " ".join(td.get_text(strip=True).lower() for td in row.find_all("td"))
@@ -177,12 +182,10 @@ def parse_series_metadata(html: str, saros_num: int, eclipses: list[dict]) -> di
                 count = int(cells[2])
             except ValueError:
                 continue
-            if "partial" in type_name:
+            if "penumbral" in type_name:
+                type_counts["penumbral"] = count
+            elif "partial" in type_name:
                 type_counts["partial"] = count
-            elif "annular" in type_name:
-                type_counts["annular"] = count
-            elif "hybrid" in type_name or "a-t" in type_name:
-                type_counts["hybrid"] = count
             elif "total" in type_name:
                 type_counts["total"] = count
         break
@@ -192,14 +195,15 @@ def parse_series_metadata(html: str, saros_num: int, eclipses: list[dict]) -> di
     last = sorted_eclipses[-1] if sorted_eclipses else None
 
     return {
-        "saros_number": saros_num,
-        "total_eclipses": len(eclipses),
-        "first_eclipse_date": first["calendar_date"] if first else None,
+        "saros_number":         saros_num,
+        "eclipse_kind":         "lunar",
+        "total_eclipses":       len(eclipses),
+        "first_eclipse_date":   first["calendar_date"] if first else None,
         "first_unix_timestamp": first["unix_timestamp"] if first else None,
-        "last_eclipse_date": last["calendar_date"] if last else None,
-        "last_unix_timestamp": last["unix_timestamp"] if last else None,
-        "duration_years": duration_years,
-        "eclipse_type_counts": type_counts,
+        "last_eclipse_date":    last["calendar_date"] if last else None,
+        "last_unix_timestamp":  last["unix_timestamp"] if last else None,
+        "duration_years":       duration_years,
+        "eclipse_type_counts":  type_counts,
     }
 
 
@@ -214,7 +218,7 @@ def main():
         print(f"Error: saros_number must be an integer, got: {sys.argv[1]}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Fetching Saros {saros_num} from NASA...")
+    print(f"Fetching Lunar Saros {saros_num} from NASA...")
     html = fetch_page(saros_num)
 
     print("Parsing eclipse data...")
@@ -228,7 +232,7 @@ def main():
     print("Parsing series metadata...")
     metadata = parse_series_metadata(html, saros_num, eclipses)
 
-    out_dir = str(saros_num)
+    out_dir = os.path.join(OUTPUT_BASE, str(saros_num))
     os.makedirs(out_dir, exist_ok=True)
 
     jsonl_path = os.path.join(out_dir, "eclipses.jsonl")

@@ -1,9 +1,9 @@
 # saros-unix
 
-A compact database of all 13,148 solar eclipses across Saros series 1–180, parsed from NASA's eclipse catalog and stored in two formats:
-
-- **Binary files** for desktop / server use (seekable, ~262 KB total)
-- **C headers with PROGMEM support** for embedded targets (AVR, ESP32, etc.)
+Solar and lunar eclipse lookup library backed by NASA's Saros catalog.
+Data covers all 180 solar and 180 lunar Saros series.
+Designed for embedded targets (AVR, ESP32) via PROGMEM headers, and for
+hosted (Linux / macOS) use with the same API.
 
 ---
 
@@ -11,36 +11,37 @@ A compact database of all 13,148 solar eclipses across Saros series 1–180, par
 
 ```
 saros-unix/
-  parse_saros.py        — fetch and parse one Saros series from NASA
-  fetch_all.sh          — fetch all series 1–180
+  parse_solar_saros.py   — fetch and parse one solar Saros series from NASA
+  parse_lunar_saros.py   — fetch and parse one lunar Saros series from NASA
+  fetch_all.sh           — fetch all series (solar, lunar, or both)
 
-  {1..180}/
-    eclipses.jsonl      — one eclipse per line, sorted by unix_timestamp
-    saros.json          — series metadata (type counts, duration, etc.)
+  solar/{1..180}/eclipses.jsonl   — one solar eclipse per line
+  lunar/{1..180}/eclipses.jsonl   — one lunar eclipse per line
 
   db/
-    build_db.py         — build binary files and generate C headers
-    eclipse_db.h        — C API for disk-based database
-    eclipse_db.c        — implementation
-    eclipse_db_progmem.h — inline API for PROGMEM / RAM headers
+    build_db.py          — build binary .db files and generate C headers
 
-    — generated binary files —
-    eclipse_times.db    — sorted int64 timestamps (105 KB)
-    eclipse_info.db     — packed eclipse records, 10 bytes each (131 KB)
-    saros.db            — saros series index records (31 KB)
+    saros.h              — C library (solar + lunar API, caching, PROGMEM)
+    solar_impl.c         — solar implementation translation unit
+    lunar_impl.c         — lunar implementation translation unit
 
-    — generated C headers (PROGMEM-ready) —
-    eclipse_times_all.h     eclipse_times_modern.h
-    eclipse_info_all.h      eclipse_info_modern.h
-    saros_all.h             saros_modern.h
+    solar/               — generated solar headers and .db files
+      eclipse_times_{all,modern}.h
+      eclipse_info_{all,modern}.h
+      saros_{all,modern}.h
+
+    lunar/               — generated lunar headers and .db files
+      eclipse_times_{all,modern}.h
+      eclipse_info_{all,modern}.h
+      saros_{all,modern}.h
 ```
 
-**Slices:**
+**Data slices:**
 
-| Slice | Saros range | Eclipses | Times | Info | Saros |
-|-------|-------------|----------|-------|------|-------|
-| `all` | 1–180 | 13,148 | 102.7 KB | 128.4 KB | 30.6 KB |
-| `modern` | 110–173 | 4,593 | 35.9 KB | 44.9 KB | 10.9 KB |
+| Slice | Saros range | Solar eclipses | Lunar eclipses |
+|-------|-------------|---------------|----------------|
+| `all` | 1–180 | 13,206 | 12,223 |
+| `modern` | 110–173 | 4,612 | 4,279 |
 
 ---
 
@@ -49,251 +50,278 @@ saros-unix/
 ```bash
 pip install requests beautifulsoup4
 
-# Fetch one series
-python3 parse_saros.py 141
-
-# Fetch all series 1–180 (skips already-downloaded)
+# Fetch all solar and lunar series (skips already-downloaded)
 ./fetch_all.sh
-```
 
-Each series is written to `{number}/eclipses.jsonl` and `{number}/saros.json`.
+# Fetch only solar, or only lunar
+./fetch_all.sh solar
+./fetch_all.sh lunar
+
+# Fetch a specific range
+./fetch_all.sh solar 130 145
+```
 
 ---
 
-## Building the binary database and C headers
+## Building the C headers
 
 ```bash
-python3 db/build_db.py
+python3 db/build_db.py         # builds both solar and lunar
+python3 db/build_db.py solar   # solar only
+python3 db/build_db.py lunar   # lunar only
 ```
 
-This reads all `{1..180}/eclipses.jsonl` files and writes:
-- `db/eclipse_times.db`, `db/eclipse_info.db`, `db/saros.db`
-- `db/eclipse_times_{all,modern}.h`
-- `db/eclipse_info_{all,modern}.h`
-- `db/saros_{all,modern}.h`
+Outputs `eclipse_times_*.h`, `eclipse_info_*.h`, and `saros_*.h` into
+`db/solar/` and `db/lunar/`.
 
 ---
 
-## C API — disk-based (desktop / server)
+## C library — saros.h
 
-Compile with `eclipse_db.c`:
+`db/saros.h` is a single-header library. It provides solar and lunar eclipse
+lookup with binary search and a one-result cache.
 
+### Two-translation-unit pattern
+
+The solar and lunar data headers define arrays with the same names
+(`eclipse_times_modern[]`, etc.) so they **cannot** both be in one TU.
+Compile two separate files:
+
+**solar_impl.c**
 ```c
-#include "eclipse_db.h"
+#define SAROS_IMPL_SOLAR
+// #define SAROS_USE_ALL          // full catalog (Saros 1-180); default is modern (110-173)
+// #define ECLIPSE_USE_PROGMEM    // AVR/ESP32: store arrays in flash
+#include "solar/eclipse_times_modern.h"
+#include "solar/eclipse_info_modern.h"
+#include "solar/saros_modern.h"
+#include "saros.h"
 ```
 
-### Lifecycle
-
+**lunar_impl.c**
 ```c
-// Open all three database files. Returns 0 on success.
-// Loads eclipse_times.db into RAM (105 KB) for O(log n) binary search.
-int eclipse_db_open(const char *times_path,
-                    const char *info_path,
-                    const char *saros_path);
-
-void eclipse_db_close(void);
+#define SAROS_IMPL_LUNAR
+#include "lunar/eclipse_times_modern.h"
+#include "lunar/eclipse_info_modern.h"
+#include "lunar/saros_modern.h"
+#include "saros.h"
 ```
 
-### Queries
+**main.c / sketch.ino**
+```c
+#include "saros.h"   // declarations only — no SAROS_IMPL_*
+```
+
+**Build:**
+```bash
+cc -O2 -std=c11 -o myapp main.c solar_impl.c lunar_impl.c
+```
+
+---
+
+### API
 
 ```c
-// Smallest eclipse timestamp >= ts. .found == 0 if none exists.
-eclipse_ref_t find_next_eclipse(int64_t timestamp);
+// ── Solar ─────────────────────────────────────────────────────────────────
 
-// Largest eclipse timestamp <= ts. .found == 0 if none exists.
-eclipse_ref_t find_past_eclipse(int64_t timestamp);
+// Nearest solar eclipse at or after ts.
+// result.eclipse.valid == 0 if ts is past the last eclipse in the dataset.
+// Also returns the preceding and following eclipses in the same Saros series.
+eclipse_result_t find_next_solar_eclipse(int64_t timestamp);
 
-// Read eclipse metadata by global index. O(1) seek.
-eclipse_info_t get_eclipse_info(uint16_t index);
+// Nearest solar eclipse at or before ts.
+eclipse_result_t find_past_solar_eclipse(int64_t timestamp);
 
-// Read timestamp for global index from the in-memory array. O(1).
-int64_t get_eclipse_time(uint16_t index);
+// Past and future eclipses within a specific solar Saros series, relative to ts.
+saros_window_t   find_solar_saros_window(int64_t timestamp, uint8_t saros_number);
 
-// Read all eclipse indices for a Saros series. O(1) seek.
-saros_series_t get_saros_series(uint8_t saros_number);
+// Solar eclipse closest to ts (inline helper — calls next + past internally).
+eclipse_result_t find_closest_solar_eclipse(int64_t timestamp);
+
+// Clear the solar lookup cache (rarely needed).
+void solar_invalidate_cache(void);
+
+// ── Lunar ─────────────────────────────────────────────────────────────────
+
+eclipse_result_t find_next_lunar_eclipse(int64_t timestamp);
+eclipse_result_t find_past_lunar_eclipse(int64_t timestamp);
+eclipse_result_t find_closest_lunar_eclipse(int64_t timestamp);
+saros_window_t   find_lunar_saros_window(int64_t timestamp, uint8_t saros_number);
+void             lunar_invalidate_cache(void);
 ```
+
+---
 
 ### Return types
 
 ```c
 typedef struct {
-    int64_t  unix_time;   // unix timestamp of the eclipse
-    uint16_t index;       // global eclipse index
-    int      found;       // 0 = no result
-} eclipse_ref_t;
+    int64_t  unix_time;      // seconds since Unix epoch (TD scale)
+    uint16_t global_index;   // flat index into eclipse_times / eclipse_info arrays
+    union {
+        solar_eclipse_info_t solar;
+        lunar_eclipse_info_t lunar;
+    } info;
+    uint8_t  valid;          // 1 = populated; 0 = no eclipse in this direction
+} eclipse_entry_t;
 
+// Returned by find_next/past_*_eclipse()
 typedef struct {
-    int16_t  latitude_deg10;    // latitude  × 10  (e.g. 633 = 63.3°N)
-    int16_t  longitude_deg10;   // longitude × 10  (e.g. -1376 = 137.6°W)
-    uint16_t central_duration;  // seconds; 0xFFFF = not applicable
-    uint8_t  saros_number;      // 1–180
-    uint8_t  saros_pos;         // 0-based position within this series
-    uint8_t  ecl_type;          // eclipse_type_t enum (see eclipse_db.h)
-    uint8_t  sun_alt;           // sun altitude at greatest eclipse (0–90°)
-} eclipse_info_t;
+    eclipse_entry_t eclipse;     // the matched eclipse
+    eclipse_entry_t saros_prev;  // previous eclipse in the same Saros series
+    eclipse_entry_t saros_next;  // next eclipse in the same Saros series
+} eclipse_result_t;
 
+// Returned by find_*_saros_window()
 typedef struct {
-    uint16_t indices[86];  // global eclipse indices
-    uint8_t  count;        // number of eclipses in the series
-} saros_series_t;
+    eclipse_entry_t past;        // most recent eclipse in the series before ts
+    eclipse_entry_t future;      // next eclipse in the series at or after ts
+    uint8_t         saros_number;
+} saros_window_t;
 ```
+
+**Solar eclipse info:**
+```c
+typedef struct {
+    int16_t  latitude_deg10;    // latitude  × 10 (e.g. 633 = 63.3°N)
+    int16_t  longitude_deg10;   // longitude × 10 (e.g. -1376 = 137.6°W)
+    uint16_t central_duration;  // central duration in seconds; 0xFFFF = n/a
+    uint8_t  saros_number;      // 1–180
+    uint8_t  saros_pos;         // 0-based position within the series
+    uint8_t  ecl_type;          // solar_eclipse_type_t
+    uint8_t  sun_alt;           // sun altitude at greatest eclipse (degrees)
+} solar_eclipse_info_t;
+```
+
+**Lunar eclipse info:**
+```c
+typedef struct {
+    uint16_t pen_duration;      // penumbral phase duration in seconds; 0xFFFF = n/a
+    uint16_t par_duration;      // partial    phase duration in seconds; 0xFFFF = n/a
+    uint16_t total_duration;    // total      phase duration in seconds; 0xFFFF = n/a
+    uint8_t  saros_number;
+    uint8_t  saros_pos;
+    uint8_t  ecl_type;          // lunar_eclipse_type_t
+} lunar_eclipse_info_t;
+```
+
+---
+
+### Eclipse type codes
+
+**Solar** (`solar_eclipse_type_t`):
+
+| Value | Code | Description |
+|-------|------|-------------|
+| 0 | `A`  | Annular |
+| 1 | `A+` | Annular (long) |
+| 2 | `A-` | Annular (sub-central) |
+| 3 | `Am` | Annular (short) |
+| 4 | `An` | Annular (non-central) |
+| 5 | `As` | Annular (saros) |
+| 6 | `H`  | Hybrid (annular-total) |
+| 7 | `H2` | Hybrid |
+| 8 | `H3` | Hybrid |
+| 9 | `Hm` | Hybrid (short) |
+| 10 | `P`  | Partial |
+| 11 | `Pb` | Partial (beginning of saros) |
+| 12 | `Pe` | Partial (end of saros) |
+| 13 | `T`  | Total |
+| 14 | `T+` | Total (long) |
+| 15 | `T-` | Total (sub-central) |
+| 16 | `Tm` | Total (short) |
+| 17 | `Tn` | Total (non-central) |
+| 18 | `Ts` | Total (saros) |
+
+**Lunar** (`lunar_eclipse_type_t`):
+
+| Value | Code | Description |
+|-------|------|-------------|
+| 0 | `N`  | Penumbral |
+| 1 | `Nb` | Penumbral (beginning of saros) |
+| 2 | `Ne` | Penumbral (end of saros) |
+| 3 | `Nx` | Penumbral (non-central) |
+| 4 | `P`  | Partial |
+| 5 | `Pb` | Partial (beginning of saros) |
+| 6 | `Pe` | Partial (end of saros) |
+| 7 | `T`  | Total |
+| 8 | `T+` | Total (long) |
+| 9 | `T-` | Total (sub-central) |
+| 10 | `Tm` | Total (short) |
+| 11 | `Tn` | Total (non-central) |
+| 12 | `Ts` | Total (saros) |
+
+---
+
+### Caching
+
+Each implementation (solar / lunar) keeps one cached `eclipse_result_t`.
+A subsequent call hits the cache when the new timestamp falls within the same
+inter-eclipse interval, avoiding a binary search.  No explicit management is
+needed; call `solar_invalidate_cache()` / `lunar_invalidate_cache()` only if
+the dataset is hot-swapped at runtime.
+
+---
+
+### PROGMEM (AVR / ESP32)
+
+Define `ECLIPSE_USE_PROGMEM` before including the data headers.  The headers
+will place arrays in flash with `PROGMEM` and define the `ECLIPSE_READ_*`
+macros to use `pgm_read_byte` / `pgm_read_word` / `pgm_read_dword`.  The
+`saros.h` implementation uses only these macros, so no other changes are
+needed.
+
+---
 
 ### Example
 
 ```c
-if (eclipse_db_open("db/eclipse_times.db",
-                    "db/eclipse_info.db",
-                    "db/saros.db") != 0) { /* handle error */ }
+#include <time.h>
+#include "saros.h"
 
-// Next eclipse from now
-eclipse_ref_t r = find_next_eclipse(time(NULL));
-if (r.found) {
-    eclipse_info_t info = get_eclipse_info(r.index);
-    printf("Next eclipse: unix=%lld  type=%s  saros=%u\n",
-           (long long)r.unix_time,
-           ECLIPSE_TYPE_NAMES[info.ecl_type],
-           info.saros_number);
+int main(void)
+{
+    int64_t now = (int64_t)time(NULL);
+
+    // Next solar eclipse and its Saros neighbours
+    eclipse_result_t r = find_next_solar_eclipse(now);
+    if (r.eclipse.valid) {
+        solar_eclipse_info_t *s = &r.eclipse.info.solar;
+        printf("Next solar: unix=%lld  saros=%u  pos=%u  type=%u\n",
+               (long long)r.eclipse.unix_time,
+               s->saros_number, s->saros_pos, s->ecl_type);
+    }
+
+    // Saros 145 window around now
+    saros_window_t w = find_solar_saros_window(now, 145);
+    if (w.past.valid)
+        printf("Saros 145 past:   unix=%lld\n", (long long)w.past.unix_time);
+    if (w.future.valid)
+        printf("Saros 145 future: unix=%lld\n", (long long)w.future.unix_time);
+
+    // Next lunar eclipse
+    eclipse_result_t lr = find_next_lunar_eclipse(now);
+    if (lr.eclipse.valid) {
+        lunar_eclipse_info_t *l = &lr.eclipse.info.lunar;
+        printf("Next lunar: unix=%lld  saros=%u  type=%u\n",
+               (long long)lr.eclipse.unix_time,
+               l->saros_number, l->ecl_type);
+    }
+
+    return 0;
 }
-
-// All eclipses in Saros 141
-saros_series_t s = get_saros_series(141);
-for (int i = 0; i < s.count; i++) {
-    int64_t ts = get_eclipse_time(s.indices[i]);
-}
-
-eclipse_db_close();
 ```
 
-### Build
-
+Build and run the included test:
 ```bash
-make -C db test_db
-db/test_db db/
+make -C db
+./db/test_saros_lib
 ```
-
----
-
-## C API — PROGMEM headers (embedded / AVR / ESP32)
-
-All data is baked into C headers as `static const uint8_t[]` arrays.
-Include only the headers you need — each array is in its own file.
-
-| Header | Contents | modern | all |
-|--------|----------|--------|-----|
-| `eclipse_times_*.h` | Sorted int64 timestamps | 35.9 KB | 102.7 KB |
-| `eclipse_info_*.h` | Packed eclipse_info_t records | 44.9 KB | 128.4 KB |
-| `saros_*.h` | Saros series index records | 10.9 KB | 30.6 KB |
-
-### Usage on AVR / ESP32
-
-```c
-#define ECLIPSE_USE_PROGMEM          // activates PROGMEM placement + pgm_read_*
-#include "eclipse_times_modern.h"
-#include "eclipse_info_modern.h"
-#include "saros_modern.h"            // optional — only if you need series lookup
-#include "eclipse_db_progmem.h"
-```
-
-### Usage on hosted (Linux / macOS, for testing)
-
-```c
-// No #define — data lives in RAM, same API
-#include "eclipse_times_modern.h"
-#include "eclipse_info_modern.h"
-#include "eclipse_db_progmem.h"
-```
-
-### Queries
-
-All functions are `static inline` and take the array pointer + count explicitly, so they work with any slice.
-
-```c
-// Next eclipse >= timestamp
-pgm_eclipse_ref_t pgm_find_next_eclipse(
-    const uint8_t *times_base, uint16_t count, int64_t timestamp);
-
-// Last eclipse <= timestamp
-pgm_eclipse_ref_t pgm_find_past_eclipse(
-    const uint8_t *times_base, uint16_t count, int64_t timestamp);
-
-// Read timestamp by local index. O(1).
-int64_t pgm_get_eclipse_time(const uint8_t *times_base, uint16_t index);
-
-// Read eclipse_info_t by local index. O(1).
-pgm_eclipse_info_t pgm_get_eclipse_info(const uint8_t *info_base, uint16_t index);
-
-// Read all indices for a saros series.
-pgm_saros_series_t pgm_get_saros_series(
-    const uint8_t *saros_base, uint8_t saros_range_start, uint8_t saros_number);
-```
-
-### Example (modern slice, times + info only)
-
-```c
-#define ECLIPSE_USE_PROGMEM
-#include "eclipse_times_modern.h"
-#include "eclipse_info_modern.h"
-#include "eclipse_db_progmem.h"
-
-// Find next eclipse after a unix timestamp
-pgm_eclipse_ref_t r = pgm_find_next_eclipse(
-    eclipse_times_modern, ECLIPSE_MODERN_COUNT, now_unix);
-
-if (r.found) {
-    pgm_eclipse_info_t info = pgm_get_eclipse_info(eclipse_info_modern, r.index);
-    // info.saros_number, info.ecl_type, info.central_duration, etc.
-}
-```
-
-### Example (saros series lookup, modern slice)
-
-```c
-#include "eclipse_times_modern.h"
-#include "saros_modern.h"
-#include "eclipse_db_progmem.h"
-
-pgm_saros_series_t s = pgm_get_saros_series(
-    saros_modern, ECLIPSE_MODERN_SAROS_FIRST, 141);
-
-for (int i = 0; i < s.count; i++) {
-    int64_t ts = pgm_get_eclipse_time(eclipse_times_modern, s.indices[i]);
-}
-```
-
-### Build (hosted test)
-
-```bash
-make -C db test_progmem
-db/test_progmem
-```
-
----
-
-## Eclipse type enum
-
-| Value | Name | Description |
-|-------|------|-------------|
-| 0 | `A` | Annular |
-| 1 | `A+` | Annular (long) |
-| 2 | `Am` | Annular (short) |
-| 3 | `An` | Annular (non-central) |
-| 4 | `As` | Annular (saros) |
-| 5 | `H` | Hybrid (annular-total) |
-| 6 | `H2` | Hybrid |
-| 7 | `H3` | Hybrid |
-| 8 | `Hm` | Hybrid (short) |
-| 9 | `P` | Partial |
-| 10 | `Pb` | Partial (beginning of saros) |
-| 11 | `Pe` | Partial (end of saros) |
-| 12 | `T` | Total |
-| 13 | `T+` | Total (long) |
-| 14 | `Tm` | Total (short) |
-| 15 | `Tn` | Total (non-central) |
-| 16 | `Ts` | Total (saros) |
 
 ---
 
 ## Data source
 
-[NASA Eclipse Web Site — Saros Series](https://eclipse.gsfc.nasa.gov/SEsaros/SEsaros.html)
+[NASA Eclipse Web Site — Solar Saros Series](https://eclipse.gsfc.nasa.gov/SEsaros/SEsaros.html)
+[NASA Eclipse Web Site — Lunar Saros Series](https://eclipse.gsfc.nasa.gov/LEsaros/LEsaros.html)
 Fred Espenak, NASA/GSFC (retired)
