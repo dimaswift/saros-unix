@@ -190,19 +190,6 @@ int main(void)
         print_solar_result("find_past_solar_eclipse(1970-01-01):", &p);
     }
 
-    /* ── Solar: cache test — same result without re-search ─────────────── */
-    {
-        printf("── Cache test (solar): two nearby timestamps, same eclipse ──\n");
-        int64_t t1 = ts_2024_solar - 86400LL;   /* one day before */
-        int64_t t2 = ts_2024_solar - 1LL;        /* one second before */
-        eclipse_result_t r1 = find_next_solar_eclipse(t1);
-        eclipse_result_t r2 = find_next_solar_eclipse(t2);
-        int same = (r1.eclipse.global_index == r2.eclipse.global_index);
-        printf("  t1 result global_index = %u\n", r1.eclipse.global_index);
-        printf("  t2 result global_index = %u\n", r2.eclipse.global_index);
-        printf("  Cache hit (same index): %s\n\n", same ? "YES" : "NO");
-    }
-
     /* ── Solar: saros window ────────────────────────────────────────────── */
     {
         /* Saros 145 — the series that produced the 1999 total solar eclipse */
@@ -232,19 +219,6 @@ int main(void)
     {
         eclipse_result_t r = find_next_lunar_eclipse(ts_epoch);
         print_lunar_result("find_next_lunar_eclipse(1970-01-01):", &r);
-    }
-
-    /* ── Lunar: cache test ──────────────────────────────────────────────── */
-    {
-        printf("── Cache test (lunar): two nearby timestamps, same eclipse ──\n");
-        int64_t t1 = ts_2025_lunar - 3600LL * 24LL * 10LL;
-        int64_t t2 = ts_2025_lunar - 1LL;
-        eclipse_result_t r1 = find_next_lunar_eclipse(t1);
-        eclipse_result_t r2 = find_next_lunar_eclipse(t2);
-        int same = (r1.eclipse.global_index == r2.eclipse.global_index);
-        printf("  t1 result global_index = %u\n", r1.eclipse.global_index);
-        printf("  t2 result global_index = %u\n", r2.eclipse.global_index);
-        printf("  Cache hit (same index): %s\n\n", same ? "YES" : "NO");
     }
 
     /* ── Lunar: saros window ────────────────────────────────────────────── */

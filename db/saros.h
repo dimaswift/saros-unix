@@ -41,13 +41,6 @@
  * ── PROGMEM (AVR / ESP32) ─────────────────────────────────────────────────
  *   Define ECLIPSE_USE_PROGMEM before including the data headers.
  *   The data headers define the ECLIPSE_READ_* macros accordingly.
- *
- * ── Caching ───────────────────────────────────────────────────────────────
- *   Each implementation (solar / lunar) keeps one cached result.
- *   On a subsequent call the cache is valid when the new timestamp still
- *   falls within the same inter-eclipse interval, avoiding a binary search.
- *   Call solar_invalidate_cache() / lunar_invalidate_cache() to force a
- *   fresh search (rarely needed).
  */
 
 #ifndef SAROS_H
@@ -216,14 +209,10 @@ eclipse_result_t find_past_solar_eclipse(int64_t timestamp);
  */
 saros_window_t find_solar_saros_window(int64_t timestamp, uint8_t saros_number);
 
-/** Clear the solar lookup cache (rarely needed). */
-void solar_invalidate_cache(void);
-
-/** Same four functions for lunar eclipses. */
+/** Same three functions for lunar eclipses. */
 eclipse_result_t find_next_lunar_eclipse(int64_t timestamp);
 eclipse_result_t find_past_lunar_eclipse(int64_t timestamp);
 saros_window_t   find_lunar_saros_window(int64_t timestamp, uint8_t saros_number);
-void             lunar_invalidate_cache(void);
 
 #ifdef __cplusplus
 }
@@ -440,32 +429,10 @@ static void _saros_neighbours(
     }
 }
 
-/* ── Cache type ─────────────────────────────────────────────────────────── */
-
-/*
- * Stores the last eclipse_result_t and the timestamp interval [lo, hi)
- * (for "next" searches) or [lo, hi] (for "past" searches) within which
- * that result remains valid.
- */
-typedef struct {
-    eclipse_result_t result;
-    int64_t          lo;       /* inclusive lower bound for cache hit */
-    int64_t          hi;       /* inclusive upper bound for cache hit */
-    uint8_t          valid;
-    uint8_t          for_next; /* 1 = from a find_next call, 0 = find_past */
-} _saros_cache_t;
-
 /* ────────────────────────────────────────────────────────────────────────── *
  * SOLAR implementation                                                       *
  * ────────────────────────────────────────────────────────────────────────── */
 #if defined(SAROS_IMPL_SOLAR)
-
-static _saros_cache_t _solar_cache;  /* zero-initialised at startup */
-
-void solar_invalidate_cache(void)
-{
-    memset(&_solar_cache, 0, sizeof(_solar_cache));
-}
 
 static eclipse_result_t _solar_build(uint32_t focal_idx)
 {
@@ -486,57 +453,20 @@ eclipse_result_t find_next_solar_eclipse(int64_t timestamp)
 {
     eclipse_result_t empty;
     memset(&empty, 0, sizeof(empty));
-
-    /* Cache check: same interval → same "next" eclipse */
-    if (_solar_cache.valid && _solar_cache.for_next &&
-        timestamp >= _solar_cache.lo && timestamp <= _solar_cache.hi)
-        return _solar_cache.result;
-
     uint32_t idx = _lower_bound(_SAROS_TIMES_ARR, _SAROS_COUNT, timestamp);
     if (idx >= _SAROS_COUNT)
         return empty;
-
-    eclipse_result_t r = _solar_build(idx);
-
-    /* Cache covers [previous_eclipse+1 .. this_eclipse] */
-    _solar_cache.result   = r;
-    _solar_cache.for_next = 1;
-    _solar_cache.valid    = 1;
-    _solar_cache.lo = (idx > 0u)
-        ? _saros_read_time(_SAROS_TIMES_ARR, idx - 1u) + 1
-        : INT64_MIN;
-    _solar_cache.hi = r.eclipse.unix_time;
-
-    return r;
+    return _solar_build(idx);
 }
 
 eclipse_result_t find_past_solar_eclipse(int64_t timestamp)
 {
     eclipse_result_t empty;
     memset(&empty, 0, sizeof(empty));
-
-    /* Cache check: same interval → same "past" eclipse */
-    if (_solar_cache.valid && !_solar_cache.for_next &&
-        timestamp >= _solar_cache.lo && timestamp <= _solar_cache.hi)
-        return _solar_cache.result;
-
     uint32_t idx = _upper_bound(_SAROS_TIMES_ARR, _SAROS_COUNT, timestamp);
     if (idx == 0u)
         return empty;
-    idx--;
-
-    eclipse_result_t r = _solar_build(idx);
-
-    /* Cache covers [this_eclipse .. next_eclipse-1] */
-    _solar_cache.result   = r;
-    _solar_cache.for_next = 0;
-    _solar_cache.valid    = 1;
-    _solar_cache.lo = r.eclipse.unix_time;
-    _solar_cache.hi = (idx + 1u < _SAROS_COUNT)
-        ? _saros_read_time(_SAROS_TIMES_ARR, idx + 1u) - 1
-        : INT64_MAX;
-
-    return r;
+    return _solar_build(idx - 1u);
 }
 
 saros_window_t find_solar_saros_window(int64_t timestamp, uint8_t saros_number)
@@ -582,13 +512,6 @@ saros_window_t find_solar_saros_window(int64_t timestamp, uint8_t saros_number)
  * ────────────────────────────────────────────────────────────────────────── */
 #if defined(SAROS_IMPL_LUNAR)
 
-static _saros_cache_t _lunar_cache;  /* zero-initialised at startup */
-
-void lunar_invalidate_cache(void)
-{
-    memset(&_lunar_cache, 0, sizeof(_lunar_cache));
-}
-
 static eclipse_result_t _lunar_build(uint32_t focal_idx)
 {
     eclipse_result_t r;
@@ -608,53 +531,20 @@ eclipse_result_t find_next_lunar_eclipse(int64_t timestamp)
 {
     eclipse_result_t empty;
     memset(&empty, 0, sizeof(empty));
-
-    if (_lunar_cache.valid && _lunar_cache.for_next &&
-        timestamp >= _lunar_cache.lo && timestamp <= _lunar_cache.hi)
-        return _lunar_cache.result;
-
     uint32_t idx = _lower_bound(_SAROS_TIMES_ARR, _SAROS_COUNT, timestamp);
     if (idx >= _SAROS_COUNT)
         return empty;
-
-    eclipse_result_t r = _lunar_build(idx);
-
-    _lunar_cache.result   = r;
-    _lunar_cache.for_next = 1;
-    _lunar_cache.valid    = 1;
-    _lunar_cache.lo = (idx > 0u)
-        ? _saros_read_time(_SAROS_TIMES_ARR, idx - 1u) + 1
-        : INT64_MIN;
-    _lunar_cache.hi = r.eclipse.unix_time;
-
-    return r;
+    return _lunar_build(idx);
 }
 
 eclipse_result_t find_past_lunar_eclipse(int64_t timestamp)
 {
     eclipse_result_t empty;
     memset(&empty, 0, sizeof(empty));
-
-    if (_lunar_cache.valid && !_lunar_cache.for_next &&
-        timestamp >= _lunar_cache.lo && timestamp <= _lunar_cache.hi)
-        return _lunar_cache.result;
-
     uint32_t idx = _upper_bound(_SAROS_TIMES_ARR, _SAROS_COUNT, timestamp);
     if (idx == 0u)
         return empty;
-    idx--;
-
-    eclipse_result_t r = _lunar_build(idx);
-
-    _lunar_cache.result   = r;
-    _lunar_cache.for_next = 0;
-    _lunar_cache.valid    = 1;
-    _lunar_cache.lo = r.eclipse.unix_time;
-    _lunar_cache.hi = (idx + 1u < _SAROS_COUNT)
-        ? _saros_read_time(_SAROS_TIMES_ARR, idx + 1u) - 1
-        : INT64_MAX;
-
-    return r;
+    return _lunar_build(idx - 1u);
 }
 
 saros_window_t find_lunar_saros_window(int64_t timestamp, uint8_t saros_number)
