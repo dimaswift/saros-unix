@@ -138,16 +138,12 @@ saros_window_t   find_solar_saros_window(int64_t timestamp, uint8_t saros_number
 // Solar eclipse closest to ts (inline helper — calls next + past internally).
 eclipse_result_t find_closest_solar_eclipse(int64_t timestamp);
 
-// Clear the solar lookup cache (rarely needed).
-void solar_invalidate_cache(void);
-
 // ── Lunar ─────────────────────────────────────────────────────────────────
 
 eclipse_result_t find_next_lunar_eclipse(int64_t timestamp);
 eclipse_result_t find_past_lunar_eclipse(int64_t timestamp);
 eclipse_result_t find_closest_lunar_eclipse(int64_t timestamp);
 saros_window_t   find_lunar_saros_window(int64_t timestamp, uint8_t saros_number);
-void             lunar_invalidate_cache(void);
 ```
 
 ---
@@ -250,16 +246,6 @@ typedef struct {
 | 10 | `Tm` | Total (short) |
 | 11 | `Tn` | Total (non-central) |
 | 12 | `Ts` | Total (saros) |
-
----
-
-### Caching
-
-Each implementation (solar / lunar) keeps one cached `eclipse_result_t`.
-A subsequent call hits the cache when the new timestamp falls within the same
-inter-eclipse interval, avoiding a binary search.  No explicit management is
-needed; call `solar_invalidate_cache()` / `lunar_invalidate_cache()` only if
-the dataset is hot-swapped at runtime.
 
 ---
 

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "saros-eclipse"
+version = "0.1.0"
+description = "Solar and lunar eclipse lookup from NASA's full Saros catalog (Saros 1–180)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "dimaswift" }]
+keywords = ["astronomy", "eclipse", "solar", "lunar", "saros"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Typing :: Typed",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Repository = "https://github.com/dimaswift/saros-unix"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/saros"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/saros/data/solar/eclipse_times.db" = "saros/data/solar/eclipse_times.db"
+"src/saros/data/solar/eclipse_info.db"  = "saros/data/solar/eclipse_info.db"
+"src/saros/data/solar/saros.db"         = "saros/data/solar/saros.db"
+"src/saros/data/lunar/eclipse_times.db" = "saros/data/lunar/eclipse_times.db"
+"src/saros/data/lunar/eclipse_info.db"  = "saros/data/lunar/eclipse_info.db"
+"src/saros/data/lunar/saros.db"         = "saros/data/lunar/saros.db"
+"src/saros/py.typed"                    = "saros/py.typed"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
