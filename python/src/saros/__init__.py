@@ -63,11 +63,13 @@ __all__ = [
     "find_past_solar_eclipse",
     "find_closest_solar_eclipse",
     "find_solar_saros_window",
+    "get_solar_saros_series",
     # lunar functions
     "find_next_lunar_eclipse",
     "find_past_lunar_eclipse",
     "find_closest_lunar_eclipse",
     "find_lunar_saros_window",
+    "get_lunar_saros_series",
 ]
 
 __version__ = "0.1.0"
@@ -133,6 +135,25 @@ def find_solar_saros_window(
     return solar_db().saros_window(_to_unix(ts), saros_number)
 
 
+def get_solar_saros_series(saros_number: int) -> list[SolarEclipse]:
+    """Return all solar eclipses in a Saros series, ordered by time.
+
+    Args:
+        saros_number: Saros series number (1–180).
+
+    Returns:
+        A list of :class:`SolarEclipse` objects sorted by ``unix_time``.
+        Empty if *saros_number* is outside 1–180 or the series has no entries.
+
+    Example::
+
+        series = saros.get_solar_saros_series(145)
+        for e in series:
+            print(f"  {e.saros_pos:2d}  {e.unix_time:>12d}  {e.type}")
+    """
+    return solar_db().list_series(saros_number)  # type: ignore[return-value]
+
+
 # ── Lunar ─────────────────────────────────────────────────────────────────────
 
 
@@ -173,3 +194,22 @@ def find_lunar_saros_window(
         saros_number: Saros series number (1–180).
     """
     return lunar_db().saros_window(_to_unix(ts), saros_number)
+
+
+def get_lunar_saros_series(saros_number: int) -> list[LunarEclipse]:
+    """Return all lunar eclipses in a Saros series, ordered by time.
+
+    Args:
+        saros_number: Saros series number (1–180).
+
+    Returns:
+        A list of :class:`LunarEclipse` objects sorted by ``unix_time``.
+        Empty if *saros_number* is outside 1–180 or the series has no entries.
+
+    Example::
+
+        series = saros.get_lunar_saros_series(124)
+        for e in series:
+            print(f"  {e.saros_pos:2d}  {e.unix_time:>12d}  {e.type}")
+    """
+    return lunar_db().list_series(saros_number)  # type: ignore[return-value]

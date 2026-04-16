@@ -14,6 +14,7 @@ from saros import (
     find_lunar_saros_window,
     find_next_lunar_eclipse,
     find_past_lunar_eclipse,
+    get_lunar_saros_series,
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -285,3 +286,55 @@ def test_closest_returns_nearer_eclipse():
     d_pst = abs(pst.eclipse.unix_time - now_ts)
     d_cls = abs(cls.eclipse.unix_time - now_ts)
     assert d_cls <= min(d_nxt, d_pst)
+
+
+# ── get_lunar_saros_series ────────────────────────────────────────────────────
+
+def test_get_lunar_series_returns_list():
+    series = get_lunar_saros_series(124)
+    assert isinstance(series, list)
+
+def test_get_lunar_series_nonempty_for_valid_saros():
+    series = get_lunar_saros_series(124)
+    assert len(series) > 0
+
+def test_get_lunar_series_all_have_correct_saros_number():
+    series = get_lunar_saros_series(124)
+    assert all(e.saros_number == 124 for e in series)
+
+def test_get_lunar_series_saros_pos_sequential():
+    series = get_lunar_saros_series(124)
+    assert [e.saros_pos for e in series] == list(range(len(series)))
+
+def test_get_lunar_series_sorted_by_unix_time():
+    series = get_lunar_saros_series(124)
+    times = [e.unix_time for e in series]
+    assert times == sorted(times)
+
+def test_get_lunar_series_all_entries_are_lunar_eclipse():
+    series = get_lunar_saros_series(124)
+    assert all(isinstance(e, LunarEclipse) for e in series)
+
+def test_get_lunar_series_first_entry_is_oldest():
+    series = get_lunar_saros_series(124)
+    assert series[0].unix_time < series[-1].unix_time
+
+def test_get_lunar_series_known_2018_eclipse_present():
+    """The Jan 2018 eclipse (Saros 124) must appear in the series."""
+    series = get_lunar_saros_series(124)
+    target = int(_LUNAR_2018.timestamp())
+    unix_times = [e.unix_time for e in series]
+    assert any(abs(t - target) < 86400 for t in unix_times)
+
+def test_get_lunar_series_invalid_returns_empty():
+    assert get_lunar_saros_series(0)   == []
+    assert get_lunar_saros_series(181) == []
+    assert get_lunar_saros_series(999) == []
+
+def test_get_lunar_series_global_index_matches_find_closest():
+    """Entry returned by find_closest should appear in list_series."""
+    r = find_closest_lunar_eclipse(_NOW)
+    assert r.eclipse is not None
+    series = get_lunar_saros_series(r.eclipse.saros_number)
+    indices = [e.global_index for e in series]
+    assert r.eclipse.global_index in indices

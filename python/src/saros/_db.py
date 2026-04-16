@@ -165,6 +165,15 @@ class _EclipseDB:
                 hi = mid
         return lo
 
+    def list_series(self, saros_number: int) -> list[AnyEclipse]:
+        """Return every eclipse in *saros_number* in ascending time order.
+
+        Returns an empty list for invalid series numbers (outside 1–180) or
+        series with no entries.
+        """
+        count, indices = self._load_saros_series(saros_number)
+        return [self._make_entry(idx) for idx in indices[:count]]
+
     # ── Public query methods ──────────────────────────────────────────────────
 
     def find_next(self, ts: int) -> EclipseResult:
